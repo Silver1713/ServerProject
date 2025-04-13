@@ -32,6 +32,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "Windows.h"		// Entire Win32 API...
 #include "winsock2.h"		// ...or Winsock alone
 #include "ws2tcpip.h"		// getaddrinfo()
+#include <filesystem>
 
 
  // Tell the Visual Studio linker to include the following library in linking.
@@ -483,17 +484,7 @@ std::string TCPPortNumber;
 std::string UDPPortNumber;
 int main()
 {
-#pragma region TEST
-#define TESTER
-#ifdef TESTER
-	//----------------------TEST----------------------
-	FileManager::SetDirectory("data");
-	FileManager::UpdateFiles();
 
-	//Sender sender{ 0, "SampleA.txt" };
-	//----------------------TEST----------------------
-#endif
-#pragma  endregion
 
 	std::string ServerFileContainer;
 	std::cout << "Server TCP Port Number: ";
@@ -506,6 +497,22 @@ int main()
 	std::string portString = TCPPortNumber;
 	std::string udpPortString = UDPPortNumber;
 	std::string pathString = ServerFileContainer;
+
+
+	if (ServerFileContainer.empty())
+	{
+		std::cout << "Path must not be empty!" << std::endl;
+		return 1;
+	}
+
+	if (!std::filesystem::exists(ServerFileContainer))
+	{
+		std::cout << "Invalid Path!";
+		return 1;
+	}
+
+	FileManager::SetDirectory(ServerFileContainer);
+	FileManager::UpdateFiles();
 
 
 	// -------------------------------------------------------------------------
