@@ -72,6 +72,8 @@ std::vector<ULONG> sessions;
 std::mutex session_mutex;
 static SafeCout safeCout{};
 
+/* PRINT SERVER IP ADDRESS AND PORT NUMBER */
+char serverIPAddr[MAX_STR_LEN];
 /*!*********************************************************
 @brief
 Gracefully disconnects the client from the server.
@@ -156,6 +158,15 @@ respective clients.
 ***********************************************************/
 bool work(SOCKET clientSocket)
 {
+	//Get IP and Port
+	sockaddr client_in{};
+	int client_in_size = sizeof(client_in);
+	getpeername(clientSocket, &client_in, &client_in_size);
+	char clientIPAddr[MAX_STR_LEN];
+	char clientPort[MAX_STR_LEN];
+
+	getnameinfo(&client_in, client_in_size, clientIPAddr, sizeof(clientIPAddr), clientPort, sizeof(clientPort), NI_NUMERICHOST);
+
 	
 
 	char bufferData[MAX_BUFFER_SIZE]{};
@@ -257,42 +268,39 @@ bool work(SOCKET clientSocket)
 			}
 
 
+			long long socket = static_cast<long long>(UDPSocket);
+			// Get UDPSocket IP & Port
+			sockaddr udp_in{};
+			int udp_in_size = sizeof(udp_in);
+			getsockname(UDPSocket, &udp_in, &udp_in_size);
+			char udpIPAddr[MAX_STR_LEN];
+			char udpPort[MAX_STR_LEN];
 
-			sockaddr clientAddress{};
-			SecureZeroMemory(&clientAddress, sizeof(clientAddress));
-			int clientAddressSize = sizeof(clientAddress);
+			getnameinfo(&udp_in, udp_in_size, udpIPAddr, sizeof(udpIPAddr), udpPort, sizeof(udpPort), NI_NUMERICHOST);
+			UDPSender::CONNECTIONINFO info{};
+			info.src_ip = udpIPAddr;
+			info.src_port = ntohs(reinterpret_cast<sockaddr_in*>(&udp_in)->sin_port);
+			info.dst_ip = clientIPAddr;
+			info.dst_port = rec_port;
 
-			/* PRINT SERVER IP ADDRESS AND PORT NUMBER */
-			char serverIPAddr[MAX_STR_LEN];
-			char serverPort[MAX_STR_LEN];
-			unsigned int server_addr_source;
-			unsigned short server_port_source;
+			std::string client_ip_port = std::string(clientIPAddr) + ':' + std::to_string(rec_port);
+			UDPSender::active_senders[client_ip_port] = new UDPSender(socket, sessionID, name, info);
+			UDPSender::active_senders[client_ip_port]->SendAsync();
+			safe_cout << "UDP sender started for " << client_ip_port << std::endl;
 
-			Sender sender{ sessionID, name };
-			sender.dest_ip_addr = ip_addr;
-			sender.dest_port = rec_port;
+			uint32_t server_ip;
+			inet_pton(AF_INET, udpIPAddr, &server_ip);
+			server_ip = ntohl(server_ip);
+			uint16_t server_port = ntohs(reinterpret_cast<sockaddr_in*>(&udp_in)->sin_port);
+			char* tosend = TCPNetworkUtility::buildDownloadRsp(CMID::RSP_DOWNLOAD, server_ip, server_port, sessionID, data.data_size, true);
 
-
-			sender.create_socket(serverIPAddr,9004, true); // 9004
-			int n = getsockname(sender.udp_socket, &clientAddress, &clientAddressSize);
-			int a  = getnameinfo(&clientAddress, clientAddressSize, serverIPAddr, sizeof(serverIPAddr), serverPort, sizeof(serverPort), NI_NUMERICHOST);
-
-			inet_pton(AF_INET, serverIPAddr, &server_addr_source);
-			server_port_source = unsigned short(std::stoul(serverPort));
-			uint32_t serveraddrsrc = ntohl(server_addr_source);
-			uint16_t server_addr_port = server_port_source;
-
-			uint32_t session_id_big_endian = ntohl(sessionID);
-			uint32_t file_length_big_endian = ntohl(data.data_size);
-
-			char* sendBuffer = TCPNetworkUtility::buildDownloadRsp(CMID::RSP_DOWNLOAD, serveraddrsrc, server_addr_port, sessionID, data.data_size, true);
-
-
-			send(clientSocket, sendBuffer, RSP_DL_BUFFER_SIZE, 0);
-			delete[] sendBuffer;
-
-
-			sender.send(sender.udp_socket);
+			int byte_send = send(clientSocket, tosend, RSP_DL_BUFFER_SIZE, 0);
+			if (byte_send == SOCKET_ERROR)
+			{
+				safeCout << "send() failed." << std::endl;
+				safeCout << WSAGetLastError() << std::endl;
+			}
+			delete[] tosend;
 
 
 		}
@@ -471,6 +479,8 @@ bool work(SOCKET clientSocket)
 
 	return serverRunning;
 }
+std::string TCPPortNumber;
+std::string UDPPortNumber;
 int main()
 {
 #pragma region TEST
@@ -484,8 +494,7 @@ int main()
 	//----------------------TEST----------------------
 #endif
 #pragma  endregion
-	std::string TCPPortNumber;
-	std::string UDPPortNumber;
+
 	std::string ServerFileContainer;
 	std::cout << "Server TCP Port Number: ";
 	std::getline(std::cin, TCPPortNumber);
@@ -564,8 +573,7 @@ int main()
 	}
 
 
-	/* PRINT SERVER IP ADDRESS AND PORT NUMBER */
-	char serverIPAddr[MAX_STR_LEN];
+	
 	struct sockaddr_in* serverAddress = reinterpret_cast<struct sockaddr_in*> (info->ai_addr);
 	inet_ntop(AF_INET, &(serverAddress->sin_addr), serverIPAddr, INET_ADDRSTRLEN);
 
@@ -588,8 +596,37 @@ int main()
 		hints.ai_family,
 		hints.ai_socktype,
 		hints.ai_protocol);
+	 UDPSocket = socket(UDPHints.ai_family, UDPHints.ai_socktype, UDPHints.ai_protocol);
+	// Bind UDP	to the local socket configure
 
-	// UDPSocket = socket(UDPHints.ai_family, UDPHints.ai_socktype, UDPHints.ai_protocol);
+	 sockaddr_in local_udp_addr{};
+
+	 local_udp_addr.sin_addr = serverAddress->sin_addr ;
+	 uint16_t port = static_cast<uint16_t>(std::stoi(udpPortString));
+	 local_udp_addr.sin_port = htons(port);
+	 local_udp_addr.sin_family = AF_INET;
+
+
+	 if (UDPSocket == INVALID_SOCKET)
+	 {
+		 std::cerr << "socket() failed." << std::endl;
+		 freeaddrinfo(info);
+		 WSACleanup();
+		 return RETURN_CODE_1;
+	 }
+	 std::cout << "[UDP] Binding to " << serverIPAddr << ":" << ntohs(local_udp_addr.sin_port) << std::endl;
+
+	 if (bind(
+		 UDPSocket,
+		 reinterpret_cast<sockaddr*>(&local_udp_addr),
+		 static_cast<int>(sizeof(local_udp_addr))) == SOCKET_ERROR)
+	 {
+		 std::cerr << "bind() failed." << std::endl;
+		 closesocket(UDPSocket);
+		 UDPSocket = INVALID_SOCKET;
+	 }
+
+
 	if (INVALID_SOCKET == listenerSocket)
 	{
 		std::cerr << "socket() failed." << std::endl;

@@ -1,4 +1,4 @@
-#ifndef PACKET_HPP
+#ifndef PACKET_HPP 
 #define PACKET_HPP
 #include <cstdint>
 #include <memory>
@@ -15,6 +15,8 @@ struct Packet
 {
 
 	std::chrono::steady_clock::time_point start_time_stamp{}; //time stamp when packet was sent or received, this will not be serialized into the data buffer
+	bool is_acknowledged{ false };
+	// Field Serialization
 	uint32_t payload_len{};
 	UDPCMID payload_cmd;
 
@@ -34,6 +36,11 @@ struct Packet
 	void CalculateChecksum();
 
 	bool isTimeout();
+
+	bool isData() const; // is the packet a data packet
+	bool isAck() const;  // is the packet an ack packet
+
+
 	
 };
 #endif

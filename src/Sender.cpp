@@ -1,357 +1,340 @@
 #include "Sender.hpp"
 
-#include <filesystem>
 #include <iostream>
 #include <ws2tcpip.h>
 
-#include "CMID.hpp"
 #include "FileManager.hpp"
 #include "Packet.hpp"
+#include "safe_cout.hpp"
 
-Sender::Sender() : session_id{ 0 }, window_size{ 0 }, base{ 0 }, next_seq_num{ 0 }
+
+std::unordered_map<std::string, UDPSender*> UDPSender::active_senders{};
+std::mutex UDPSender::active_senders_mutex;
+
+
+
+UDPSender::UDPSender() : socket_fd{ -1 }, session_id{ 0 }, file_name{ "" }, client_port{ 0 }, window_size{ 10 }, max_seq_num{ 0 }, base_seq_num{ 0 }, next_seq_num{ 0 }, ack_num{ 0 }
+{}
+
+
+UDPSender::UDPSender(long long socket_fd, uint32_t session_id, std::string file_name, CONNECTIONINFO info, uint32_t window_size)
+	: ConnectionInfo{ info }, socket_fd {
+	socket_fd
+}, session_id{ session_id }, file_name{ file_name }, window_size{ window_size }, max_seq_num{ 0 }, base_seq_num{ 0 }, next_seq_num{ 0 }, ack_num{ 0 }
 {
-
+	// Initialize the sender
+	Intialize();
+	LoadFile();
 }
 
-Sender::Sender(uint32_t session_id, std::string file_name) : session_id(session_id), window_size{ 0 }, base{ 0 }, next_seq_num{ 0 }
+UDPSender::UDPSender(long long socket_fd, uint32_t session_id, std::string file_name, uint32_t window_size)
+	: socket_fd{ socket_fd }, session_id{ session_id }, file_name{ file_name }, window_size{ window_size }, max_seq_num{ 0 }, base_seq_num{ 0 }, next_seq_num{ 0 }, ack_num{ 0 }
 {
-	size_t fSize = FileManager::files[file_name].data_size;
+	// Initialize the sender
+	Intialize();
 
-
-	if (fSize < 1000000)
-	{
-		window_size = 32;
-	}
-	else if (fSize < 100000000)
-	{
-		window_size = 128;
-	}
-	else if (fSize < 1000000000)
-	{
-		window_size = 256;
-	}
-	else if (fSize < 10000000000)
-	{
-		window_size = 1024;
-	}
-
-	load_file(file_name);
+	LoadFile();
 }
 
 
-void Sender::load_file(std::string file_name)
+
+void UDPSender::Intialize()
 {
-	FileData& data = FileManager::files[file_name];
-	data.ReadFile(); // Load the file into memory
-
-	//Split the file into packets
-	uint32_t numPackets = data.data_size / PAYLOAD_SIZE;
-	uint32_t remainingBytes = data.data_size - numPackets * PAYLOAD_SIZE;
-
-	for (int i = 0; i < numPackets; i++)
+	// Setup sender socket
+	//socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (socket_fd == -1)
 	{
-		Packet* p = new Packet();
-		p->payload_cmd = UDPCMID::PAYLOAD_SEND;
-		p->seq_num = i;
-		p->data_len = PACKET_SIZE;
-		p->payload_len = PACKET_SIZE - PACKET_BUFFER_INITIAL;
-		p->payload = std::make_shared<char[]>(PAYLOAD_SIZE);
-		memcpy(p->payload.get(), data.data.get() + i * PAYLOAD_SIZE, PAYLOAD_SIZE);
-		p->CalculateChecksum();
-		packets.push_back(p);
+		std::cerr << "NO socket loaded." << std::endl;
+		return;
 	}
+	sockaddr_in local_addr{};
+	local_addr.sin_family = AF_INET;
+	local_addr.sin_port = htons(ConnectionInfo.src_port); // Local port
+	inet_pton(AF_INET, ConnectionInfo.src_ip.c_str(), &local_addr.sin_addr); // Bind to my local address
 
-	if (remainingBytes > 0)
+
+	
+
+	// Setup Client address
+	client_addr.sin_family = AF_INET;
+	client_addr.sin_port = htons(ConnectionInfo.dst_port); // Client destination port
+	inet_pton(AF_INET, ConnectionInfo.dst_ip.c_str(), & client_addr.sin_addr); // Client destination address
+	// Set socket to non-blocking mode
+	u_long mode = 1; // Non-blocking mode
+	if (ioctlsocket(socket_fd, FIONBIO, &mode) == SOCKET_ERROR)
 	{
-		Packet* p = new Packet();
-		p->payload_cmd = UDPCMID::PAYLOAD_SEND;
-		p->seq_num = numPackets;
-		p->data_len = remainingBytes + PACKET_BUFFER_INITIAL;
-		p->payload_len = remainingBytes;
-		p->payload = std::make_shared<char[]>(remainingBytes);
-		memcpy(p->payload.get(), data.data.get() + numPackets * PAYLOAD_SIZE, remainingBytes);
-		p->CalculateChecksum();
-		packets.push_back(p);
+		std::cerr << "Failed to set socket to non-blocking mode." << std::endl;
+		closesocket(socket_fd);
+		socket_fd = -1;
+		return;
 	}
+	
 
 
-	loaded_file_name = file_name;
+
+
 	
 }
 
 
 
-void Sender::send(SOCKET udpSocket)
+void UDPSender::LoadFile()
 {
-	// Set socket to non-blocking
-	u_long mode = 1;
-	ioctlsocket(udpSocket, FIONBIO, &mode);
-	
-
-	while (state != FINISH)
 	{
-
-		//STATES
-		/*
-		 *	WHILE NOT FINISH
-		 *		PREPARE_PACKET
-		 *			LOAD FILE SPLITS INTO PACKETS
-		 *			SET NEXT_SEQ_NUM TO FIRST PACKET SEQ_NUM
-		 *			STATE = SEND_PACKET
-		 *			BASE TO FIRST PACKET SEQ_NUM
-		 *			
-		 *
-		 *		
-		 */
-		if (state == SRState::PREPARE_PACKET)
-		{
-			load_file(loaded_file_name);
-			next_seq_num = packets[0]->seq_num;
-			state = SRState::SEND_PACKET;
-			base = packets[0]->seq_num;
-
-		}
-		else if (state == SRState::SEND_PACKET)
-		{
-			// Build addr info
-			sockaddr_in destAddr;
-			destAddr.sin_family = AF_INET;
-			destAddr.sin_port = dest_port;
-			destAddr.sin_addr.S_un.S_addr = dest_ip_addr;
-
-			// if next_seq_num is less than base + window_size
-			if ((next_seq_num < base + window_size) && next_seq_num < packets.size()) {
-				Packet* p = packets[next_seq_num];
-				p->start_time_stamp = std::chrono::steady_clock::now();
-				char* buffer = p->Serialize();
-				int data = sendto(udpSocket, buffer, PACKET_SIZE, 0, reinterpret_cast<sockaddr*>(&destAddr), sizeof(destAddr));
-
-				if (data == SOCKET_ERROR)
-				{
-					int WSError = WSAGetLastError();
-
-					if (WSError == WSAEWOULDBLOCK)
-					{
-						delete[] buffer;
-						buffer = nullptr;
-						continue;
-					}
-
-					std::cout << WSError << std::endl;
-					continue;
-				}
-
-				if (next_seq_num + 1 <= base + window_size)
-				{
-					state = SRState::SEND_NEXT_PACKET;
-				}
-				delete[] buffer;
-			}
-			else {
-				state = SRState::WAIT_ACK;
-			}
-				
-		}
-		else if (state == SRState::WAIT_ACK)
-		{
-			// Wait for ACK
-			char ackBuffer[PACKET_SIZE];
-			int bytes = recvfrom(udpSocket, ackBuffer, PACKET_SIZE, 0, nullptr, nullptr);
-
-			if (bytes == SOCKET_ERROR)
-			{
-				int e = WSAGetLastError();
-				if (e == WSAEWOULDBLOCK)
-				{
-					
-				}
-				else {
-					return;
-				}
-			}
-
-			if (bytes < 0)
-			{
-				//Check timeout
-				for (uint32_t b = base; b < min(base + window_size, packets.size()); b++)
-				{
-					if (b < packets.size())
-					{
-						Packet* p = packets[b];
-						if (p->isTimeout())
-						{
-							//retransmit packet
-							state = RESEND_PACKET;
-							retransmit_index = b;
-							break;
-
-						}
-						else continue;
-
-					}
-					else continue;
-				}
-			}
-
-			if (bytes > 0)
-			{
-				Packet ackPacket(ackBuffer);
-				if (ackPacket.payload_cmd == UDPCMID::PAYLOAD_ACK)
-				{
-					if (acked_packets.find(ackPacket.seq_num) == acked_packets.end())
-					{
-						acked_packets.insert(ackPacket.seq_num);
-						state = SRState::ACK_RECEIVED;
-					}
-
-					if (ackPacket.seq_num == base)
-					{
-						state = SRState::MOVE_WINDOW;
-					}
-				}
-				else
-				{
-
-				}
-			}
-		}
-		else if (state == SRState::ACK_RECEIVED)
-		{
-			std::cout << "ACKED RECEIVED\n";
-			if (acked_packets.contains(base))
-			{
-				//Base is ACK
-				state = SRState::MOVE_WINDOW;
-			}
-			else state = SRState::WAIT_ACK;
-		}
-		else if (state == SRState::TIMEOUT)
-		{
-			state = SRState::RESEND_PACKET;
-		}
-		else if (state == SRState::SEND_NEXT_PACKET)
-		{
-			if (next_seq_num == packets.size())
-			{
-				break;
-			}
-			else
-			{
-				next_seq_num++;
-				state = SRState::SEND_PACKET;
-			}
-		}
-		else if (state == SRState::RESEND_PACKET)
-		{
-			// Build addr info
-			sockaddr_in destAddr;
-			destAddr.sin_family = AF_INET;
-			destAddr.sin_port = dest_port;
-			destAddr.sin_addr.S_un.S_addr = dest_ip_addr;
-
-
-			for (uint32_t b = retransmit_index; b <= min(packets.size(), base+ window_size); b++)
-			{
-				if (b < packets.size())
-				{
-					Packet* p = packets[b];
-					if (p->isTimeout())
-					{
-
-						//retransmit packet
-						char* buf = p->Serialize(true);
-						int r = sendto(udpSocket, buf, PACKET_SIZE, 0, reinterpret_cast<sockaddr*>(&destAddr), sizeof(destAddr));
-
-						std::cout << "Retransmit Packet " << p->seq_num << " With Payload of :" << p->payload_len << "B" << '\n';
-
-						if (r == SOCKET_ERROR)
-						{
-							int err_no = WSAGetLastError();
-							if (err_no == WSAEWOULDBLOCK)
-							{
-
-								// Resend the packets
-								using namespace std::chrono_literals;
-								std::this_thread::sleep_for(100ms); 
-
-								b--;
-								continue;
-							}
-
-						}
-
-						p->start_time_stamp = std::chrono::steady_clock::now();
-
-						continue;
-
-					}
-
-				}
-			}
-			state = SRState::WAIT_ACK;
-		}
-		else if (state == SRState::MOVE_WINDOW)
-		{
-			base++;
-			if (base + window_size > packets.size())
-			{
-				state = FINISH;
-			}
-			else state = SEND_PACKET;
-		}
+		std::lock_guard<std::mutex> fd{ FileManager::file_mutex };
+		file_data = &FileManager::files[file_name];
 	}
 
+	if (file_data == nullptr)
+	{
+		std::cerr << "File not found." << std::endl;
+		return;
+	}
+
+	max_seq_num = file_data->data_size / PAYLOAD_SIZE;
+	if (file_data->data_size % PAYLOAD_SIZE != 0)
+	{
+		max_seq_num++;
+	}
+	
+	std::lock_guard<std::mutex> fd2{ send_buf_mutex };
+	send_buffer.resize(max_seq_num);
+
+	size_t total = file_data->data_size;
+	size_t current = 0;
+												   
+	for (uint32_t i = 0; i < max_seq_num; i++)
+	{
+		Packet& packet = send_buffer[i];
+		packet.payload_cmd = UDPCMID::PAYLOAD_DATA;
+		packet.session_id = session_id;
+		packet.seq_num = i;
+		packet.data_len = (total < PAYLOAD_SIZE) ? total : PAYLOAD_SIZE;
+		packet.payload = std::shared_ptr<char[]>(file_data->data, file_data->data.get() + current);
+		packet.payload_len = packet.data_len;
+		packet.CalculateChecksum();
+		packet.start_time_stamp = std::chrono::steady_clock::now();
+		current += packet.data_len;
+		total -= packet.data_len;
+	}
 }
 
-bool Sender::create_socket(std::string ip, uint16_t port, bool convert_to_network)
+
+
+
+
+
+UDPSender::~UDPSender()
 {
-	addrinfo hints{};
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_protocol = IPPROTO_UDP;
+}
 
-	udp_socket = socket(hints.ai_family, hints.ai_socktype, hints.ai_protocol);
-	uint32_t nIP{};
-	inet_pton(AF_INET, ip.c_str(), &nIP);
 
-	if (INVALID_SOCKET == udp_socket)
+void UDPSender::SenderWorker()
+{
+	updateSessionTime();
+	while (running)
 	{
-		std::cerr << "socket() failed." << std::endl;
 		
-		return false;
+		if (next_seq_num < base_seq_num + window_size && next_seq_num < max_seq_num)
+		{
+			safe_cout << "Sending packet with sequence number: " << next_seq_num << std::endl;
+			
+			SendPacket(next_seq_num);
+			if (next_seq_num == base_seq_num)
+			{
+				StartTimer();
+			}
+
+
+			++next_seq_num;
+			
+		}
+
+		if (next_seq_num > max_seq_num)
+		{
+			std::cout << "All packets sent." << std::endl;
+			std::cout << "Waiting for acknowledgements..." << std::endl;
+			
+		}
+
+		if (isTimeout())
+		{
+			std::cout << "Timeout occurred. Resending packets..." << std::endl;
+			for (uint32_t i = base_seq_num; i < next_seq_num; i++)
+			{
+				SendPacket(i);
+			}
+			StartTimer();
+		}
+		if (isClosing())
+		{
+			std::cout << "Network takes too long..." << std::endl;
+			std::cout << "Closing the sender..." << std::endl;
+			running = false;
+
+		}
 	}
-	struct sockaddr_in udp_addr_in;
-	udp_addr_in.sin_family = AF_INET;
-	udp_addr_in.sin_port = convert_to_network ? htons(port) : port;
-	udp_addr_in.sin_addr.S_un.S_addr = nIP;
-
-	int errorCode;
-	errorCode = bind(udp_socket, reinterpret_cast<sockaddr*>(&udp_addr_in), sizeof(udp_addr_in));
-
-	if (NO_ERROR != errorCode)
-	{
-		std::cerr << "bind() failed." << std::endl;
-		std::cout << WSAGetLastError() << std::endl;
-		closesocket(udp_socket);
-		udp_socket = INVALID_SOCKET;
-	}
-
-
-
 }
 
 
-bool Sender::checkTimeout()
+void UDPSender::AcknowledgementWorker()
 {
-	auto now = std::chrono::steady_clock::now();
 
+	while (running)
+	{
+		char buffer[2048];
+		socklen_t addr_len = sizeof(client_addr);
+		int peekMsg = recvfrom(socket_fd, buffer, sizeof(buffer), MSG_PEEK, (sockaddr*)&client_addr, &addr_len);
 
-	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastResponse);
+		if (peekMsg < 0)
+		{
+			int err = WSAGetLastError();
+			if (err != WSAEWOULDBLOCK)
+				std::cout << "Peek Error: " << err << std::endl;
+			continue;
+		}
+		SecureZeroMemory(buffer, sizeof(buffer));
+		int bytesReceived = recvfrom(socket_fd, buffer, sizeof(buffer), 0, (sockaddr*)&client_addr, &addr_len);
+		Packet packet{ buffer, true };
 
-	using namespace std::chrono_literals;
+		if (packet.session_id != session_id)
+		{
+			std::cerr << "Invalid packet received." << std::endl;
+			continue;
+		} else
+		{
+			if (packet.isAck() == false)
+			{
+				std::cerr << "Invalid packet received." << std::endl;
+				updateSessionTime();
+				continue;
+			}
+			updateSessionTime();
+		}
 
-	return (duration > 5s);
+		if (packet.seq_num > base_seq_num)
+		{
+			int s = base_seq_num;
+			for (uint32_t i = s; i < packet.seq_num+1; i++)
+			{
+				if (send_buffer[i].is_acknowledged == false)
+				{
+					send_buffer[i].is_acknowledged = true;
+					safe_cout << "ACK received for packet: " << i << std::endl;
+					if (base_seq_num + window_size < max_seq_num)
+					{
+						++base_seq_num;
+					}
+					safe_cout << "Base sequence number updated to: " << base_seq_num << std::endl;
+					if (i == max_seq_num - 1) {
+						safe_cout << "Final acks has been received, download is completed.";
+						running = false;
+					}
+					
+				} else
+				{
+					safe_cout << "ACK already received for packet: " << i << std::endl;
+				}
+			}
+		}
+	}
 }
+
+
+void UDPSender::SendAsync()
+{
+	running = true;
+	sender_thread = std::thread(&UDPSender::SenderWorker, this);
+	sender_acknowledgement_thread = std::thread(&UDPSender::AcknowledgementWorker, this);
+
+}
+
+void UDPSender::Stop()
+{
+	running = false;
+	if (sender_thread.joinable())
+	{
+		sender_thread.join();
+	}
+	if (sender_acknowledgement_thread.joinable())
+	{
+		sender_acknowledgement_thread.join();
+	}
+	CloseSocket();
+}
+
+void UDPSender::CloseSocket()
+{
+	if (socket_fd != -1)
+	{
+		closesocket(socket_fd);
+		socket_fd = -1;
+	}
+}
+
+
+void UDPSender::StartTimer()
+{
+	auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+	sender_time_since_response_epoch = ticks;
+}
+
+bool UDPSender::isTimeout()
+{
+	auto ticks = std::chrono::steady_clock::now().time_since_epoch().count() - sender_time_since_response_epoch;
+	double ms = ticks * double(std::chrono::steady_clock::period::num) / std::chrono::steady_clock::period::den * 1000.f;
+	return ms > PKT_TIMEOUT_MS;
+
+	
+}
+
+bool UDPSender::isClosing()
+{
+	auto ticks = std::chrono::steady_clock::now().time_since_epoch().count() - sender_start_time_stamp_epoch;
+	double ms = ticks * double(std::chrono::steady_clock::period::num) / std::chrono::steady_clock::period::den * 1000.f;
+	return ms > SENDER_MAX_WAIT_TIMEOUT_MS;
+}
+
+void UDPSender::updateSessionTime()
+{
+	auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+	sender_start_time_stamp_epoch = ticks;
+}
+
+void UDPSender::SendPacket(uint32_t seq_num)
+{
+	std::lock_guard<std::mutex> fd{ send_buf_mutex };
+	Packet& packet = send_buffer[seq_num];
+	packet.start_time_stamp = std::chrono::steady_clock::now();
+	int bytesSent = sendto(socket_fd, packet.Serialize(), PACKET_BUFFER_INITIAL + packet.payload_len, 0, (sockaddr*)&client_addr, sizeof(client_addr));
+	if (bytesSent <= 0)
+	{
+		std::cerr << "Packet send failed with: " << WSAGetLastError()
+		<< std::endl;
+	}
+	else
+	{
+		std::cout << "Sent packet: " << seq_num << std::endl;
+	}
+}
+
+
+void UDPSender::PrintStatus() const
+{
+	std::cout << "Base: " << base_seq_num << std::endl;
+	std::cout << "Next: " << next_seq_num << std::endl;
+	std::cout << "Max: " << max_seq_num << std::endl;
+	std::cout << "Window: " << window_size << std::endl;
+	
+}
+
+
+
+
+
+
+
+
 
 
 

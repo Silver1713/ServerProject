@@ -4,66 +4,58 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_set>
+#include <mutex>
 #include <vector>
 #include <chrono>
+#include <thread>
 #include <WinSock2.h>
+#include <atomic>
+#include <fstream>
 struct Packet;
 
-constexpr int TIMEOUT_MS = 5000;
+constexpr int TIMEOUT_MS = 1000; // Timeout for receiving packets`
 
-enum SR_RECEIVER
-{
 
-	AWAIT_PACKET,
-	RECEIVE_PACKET,
-	BUFFER_PACKET,
-	MOVE_WINDOW,
-	TIMEOUT_REC,
-	FINISH
-
-};
-
-//Selective Repeat -  UDP Sender
-class Receiver
-{
+// Go-Back-N receiver
+class UDPReceiver {
 public:
-	SOCKET udp_socket;
-	std::chrono::steady_clock::time_point lastResponse;
-	size_t fileSize;
-	uint32_t retransmit_index;
+    UDPReceiver();
+	UDPReceiver(uint32_t session_id, std::string file_name, std::string ip, uint16_t local_port);
+	UDPReceiver(uint32_t session_id, std::string file_name);
 
+    ~UDPReceiver();
+    void ReceiveAsync();
+    void Stop();
 
-	SR_RECEIVER state{ AWAIT_PACKET };
-	uint32_t session_id;
-	uint32_t window_size;
-	uint32_t base;
-	uint32_t next_seq_num;
+private:
+	int socket_fd; // Socket file descriptor - 
+	sockaddr_in sender_addr; // Sender address
+	uint16_t local_port; // Local port to bind to
 
-	std::vector<Packet*> received_packets;
+    std::mutex recv_buf_mutex;
+	std::vector<uint8_t> recv_buffer; // Buffer for receiving data
 
-	Packet* selected_packet{ nullptr };
-	std::unordered_set<uint32_t> acked_packets; // Set of acked packets
+	uint32_t session_id; // Session ID
+    std::string file_name;
+    uint32_t expected_seq_num;
 
+    std::thread receiver_thread;
+    std::atomic<bool> running;
 
+    std::ofstream output_file;
+    size_t bytes_received;
 
-	ULONG dest_ip_addr; // Destination IP address in network byte order
-	uint16_t dest_port; // Destination port in network byte order
+    void ReceiverWorker();
+    bool InitializeSocket();
+    void CloseSocket();
+    bool ProcessPacket(const std::vector<uint8_t>& packet, size_t packet_size);
+    bool ValidatePacket(uint32_t recv_session_id, uint32_t seq_num);
+    void SendAck(uint32_t ack_num);
+    void HandleInOrderPacket(const uint8_t* data, size_t length, uint32_t seq_num);
+    void HandleOutOfOrderPacket(uint32_t seq_num);
+    bool IsActive() const;
+    size_t GetBytesReceived() const;
 
-
-
-	Receiver(); // New instance of sender
-	Receiver(uint32_t sessionID, size_t file_size);
-	
-
-	bool create_socket(uint16_t port, bool convert_to_network = true);
-
-	void receive(SOCKET udpSocket); // FSM for receiver
-
-
-	bool isTimeout(); // Check for connection timeout
-
-	
 
 };
 

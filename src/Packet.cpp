@@ -33,14 +33,16 @@ char* Packet::Serialize(bool convert_to_network) const
 	begin += 4;
 	uint32_t checksum_net = convert_to_network ? htons(checksum) : checksum;
 	memcpy(begin, &checksum_net, 4);
+
 	begin += 4;
-	memcpy(begin, payload.get(), payload_len);
+	if (payload_len)
+		memcpy(begin, payload.get(), payload_len);
 	return buffer;
 }
 
 Packet& Packet::Deserialize(char* buffer, bool convert_to_host)
 {
-	// PAYLOAD_CMD (1B) // SEQ_NUM (4B) // DATA LENGTH (4b) // CHECKSUM (2 BYTE) // PAYLOAD (VARIABLE SIZE)
+	// PAYLOAD_CMD (1B) // Session (4B) //  SEQ_NUM (4B) // DATA LENGTH (4b) // CHECKSUM (4 BYTE) // PAYLOAD (VARIABLE SIZE)
 	char* begin = buffer;
 
 	payload_cmd = static_cast<UDPCMID>(*begin);
@@ -69,7 +71,14 @@ Packet& Packet::Deserialize(char* buffer, bool convert_to_host)
 	payload.reset();
 	payload = std::make_shared<char[]>(payload_len);
 
-	memcpy(payload.get(), begin, payload_len);
+	if (payload_len > 0)
+	{
+		memcpy(payload.get(), begin, payload_len);
+	}
+	else
+	{
+		payload = nullptr;
+	}
 
 	return  *this;
 	
@@ -98,6 +107,16 @@ bool Packet::isTimeout()
 	auto current_time = std::chrono::steady_clock::now();
 	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_stamp);
 	return duration.count() > 1000;
+}
+
+bool Packet::isData() const
+{
+	return payload_cmd == UDPCMID::PAYLOAD_DATA;
+}
+
+bool Packet::isAck() const
+{
+	return payload_cmd == UDPCMID::PAYLOAD_ACK;
 }
 
 

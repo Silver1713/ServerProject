@@ -20,8 +20,7 @@ enum struct CMID : unsigned char
 
 enum struct UDPCMID : unsigned char {
 	PAYLOAD_UNKNOWN = 0x0,
-	PAYLOAD_REC = 0x1,
-	PAYLOAD_SEND = 0x2,
-	PAYLOAD_ACK = 0x3,
+	PAYLOAD_DATA = 0x1,
+	PAYLOAD_ACK = 0x2,
 };
 #endif	

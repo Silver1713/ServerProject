@@ -1,17 +1,6 @@
 ﻿  Sender.cpp
-  main.cpp
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\main.cpp(54,9): warning C4005: 'WINSOCK_VERSION': macro redefinition
-      C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\winsock2.h(84,9):
-      see previous definition of 'WINSOCK_VERSION'
-  
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\main.cpp(233,34): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\main.cpp(253,20): warning C4267: 'initializing': conversion from 'size_t' to 'ULONG', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\main.cpp(286,48): warning C4267: 'argument': conversion from 'size_t' to 'u_long', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\main.cpp(288,127): warning C4267: 'argument': conversion from 'size_t' to 'uint32_t', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(48,22): warning C4267: 'initializing': conversion from 'size_t' to 'uint32_t', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(49,26): warning C4267: 'initializing': conversion from 'size_t' to 'uint32_t', possible loss of data
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(51,20): warning C4018: '<': signed/unsigned mismatch
-D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(341,1): warning C4715: 'Sender::create_socket': not all control paths return a value
+D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(94,37): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
+D:\JiaHao_Stuff\grp\Self\ServerProject\src\Sender.cpp(112,28): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
   ServerProject.vcxproj -> D:\JiaHao_Stuff\grp\Self\ServerProject\x64\Debug\ServerProject.exe
   'pwsh.exe' is not recognized as an internal or external command,
   operable program or batch file.
